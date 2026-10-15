@@ -1,0 +1,37 @@
+name: Build iOS Client Loader
+
+"on":
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/build-ios-client-loader.yml"
+      - "ClientLoader/**"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Check out loader source
+        uses: actions/checkout@v4
+
+      - name: Build arm64 iOS dynamic library
+        run: ./ClientLoader/build.sh
+
+      - name: Test IPA injection packager
+        run: python3 -m unittest discover -s ClientLoader -p 'test_package_ipa.py' -v
+
+      - name: Record artifact checksum
+        run: shasum -a 256 ClientLoader/ClientLoader.dylib > ClientLoader/SHA256SUMS
+
+      - name: Upload loader artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: minecraft-client-loader-ios-arm64
+          path: |
+            ClientLoader/ClientLoader.dylib
+            ClientLoader/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
