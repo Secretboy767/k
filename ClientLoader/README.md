@@ -1,13 +1,71 @@
-# Minecraft iOS JavaScript loader prototype
+# Minecraft iOS Client Loader
 
-This prototype adds a native floating menu button to the Minecraft 1.26.33 app and runs local JavaScript files through JavaScriptCore. It does **not** modify 3105 or use a Behavior Pack, Resource Pack, Script API, or world experiments.
+This project modifies a copy of Minecraft Bedrock for iOS to load a native iOS dynamic library at app startup. The library creates the in-game floating **C** button and a Roblox-style client panel, then runs trusted local JavaScript files using JavaScriptCore.
 
-## Important limitations
+It does not modify 3105, use a Behavior Pack or Resource Pack, call Minecraft Script API, or require world experiments.
 
-- Swift source cannot be interpreted from Documents. Swift must be compiled into signed native code before iOS can load it.
-- The loader only exposes `ClientMenu.registerAction(title, callback)` and `ClientMenu.notify(message)` to JavaScript. It does not expose Minecraft's renderer, inventory, input, or game state. Therefore zoom, quick drop, and FPS optimizations are not implemented by this prototype.
-- The dylib must be included in the signed app bundle and loaded by the executable. A `.3105` patch cannot do that; it can install JavaScript files in the app's Documents container after the modified IPA is installed.
-- The final IPA must be re-signed with the same certificate used for the injected dylib. The original app signature becomes invalid when the executable is modified.
+## How the modified IPA works
+
+The IPA build has two related changes inside `Payload/minecraftpe.app`:
+
+1. `Frameworks/ClientLoader.dylib` contains the native Objective-C/UIKit loader and menu.
+2. The arm64 `minecraftpe` Mach-O executable has an `LC_LOAD_DYLIB` command referencing `@executable_path/Frameworks/ClientLoader.dylib`.
+
+At launch, iOS loads that library as part of Minecraft's process. A constructor waits for Minecraft's active window, creates the floating button, and reads JavaScript files from the app's Documents container:
+
+```text
+Documents/ClientLoader/scripts/*.js
+```
+
+The loader does not evaluate JavaScript placed arbitrarily in Documents: scripts in that specific directory are explicitly enumerated and passed to JavaScriptCore. The `.js` files are content interpreted by the bundled JavaScriptCore framework; they are not native code.
+
+The original app signature is invalidated by changing the executable. eSign must sign the modified executable and embedded dylib together. This workflow has been tested for successful launch and visible UI on the user's device; further client features still need on-device testing.
+
+## Current client panel
+
+The floating purple **C** button can be dragged around the screen; its position is saved. Tapping it opens a dark rounded panel with:
+
+- **Features**: native toggles for the quick-button bar and haptic feedback, plus persistent Boolean features registered by local scripts.
+- **Buttons**: add or remove floating on-screen buttons for script actions.
+- A short status action and example script preference are included to demonstrate the UI-to-JavaScript callbacks.
+
+These are actual UI/preferences, not Minecraft gameplay features. There is currently **no connection to the game engine's inventory, camera, renderer, or input system**. Zoom, quick drop, offhand transfer, FPS controls, and auto-totem are not implemented. A script can add a toggle or button, but it only has an effect on the game if its callback has a real supported action; a UI toggle by itself cannot move items or change rendering. The quick buttons are touch buttons, not hardware keyboard keybinds.
+
+## Connection to 3105
+
+3105 is the **data/script installer**, not the native code loader:
+
+- The modified IPA installs the native loader in Minecraft's app bundle. eSign signs and installs this IPA.
+- Once installed, 3105 applies a data-only `.3105` patch to Minecraft's Application container.
+- This project's matching patch workspace folder is:
+
+  ```text
+  3105/Patches/Minecraft/Application/com.mojang.minecraftpe/Documents/ClientLoader/scripts/
+  ```
+
+- Files under that path are copied to Minecraft's:
+
+  ```text
+  Documents/ClientLoader/scripts/
+  ```
+
+- On Minecraft startup, the native loader finds those `.js` files and evaluates them.
+
+Therefore the pairing is: **eSign installs the modified executable + native dylib; 3105 installs JavaScript into the data folder the loader reads.** A `.3105` by itself cannot inject or load the dylib.
+
+Example script APIs:
+
+```js
+ClientMenu.registerFeature("My preference", false, function (enabled) {
+    console.log("My preference is now", enabled);
+});
+
+ClientMenu.registerAction("My action", function () {
+    ClientMenu.notify("The action callback ran.");
+});
+```
+
+Feature values are saved by name on-device and restored when the script registers them again. Actions appear in the Buttons tab and can be added to the on-screen button bar. Only install scripts you trust: they execute inside the game process.
 
 ## Build without owning a Mac
 
@@ -33,22 +91,8 @@ python3 ClientLoader/package_ipa.py \
 
 The packager copies the app; it does not edit the supplied `.app`. It adds a Mach-O load command for `@executable_path/Frameworks/ClientLoader.dylib` and includes the dylib in the app's `Frameworks` directory. Import the unsigned IPA into eSign, re-sign all embedded code with your certificate, then install that signed IPA. Do not install the unsigned output. Keep an untouched copy of the original IPA so you can reinstall it if the modified app does not launch.
 
-## Install scripts with 3105
+## Install and update
 
-Place `.js` files in Minecraft's Documents container at:
+To update native UI/loader code, build a new dylib, package a fresh copy of the Minecraft app, then re-sign and install the complete IPA with eSign. Updating only a JavaScript file does not require rebuilding the IPA: place it in the 3105 workspace path above and apply the patch, then restart Minecraft (scripts are loaded at app launch).
 
-```text
-Documents/ClientLoader/scripts/
-```
-
-The included `scripts/client.js` is a harmless loader-status action. The matching 3105 patch workspace path is `3105/Patches/Minecraft/Application/com.mojang.minecraftpe/Documents/ClientLoader/scripts/`.
-
-Scripts are loaded alphabetically on app launch. They can register menu actions:
-
-```js
-ClientMenu.registerAction("Example", function () {
-    ClientMenu.notify("JavaScript action ran.");
-});
-```
-
-Because this runs JavaScript inside the game process, only install scripts you trust. This is an experimental native injection, not a supported Minecraft extension interface.
+Keep the original Minecraft IPA available as a recovery copy. If a modified build crashes or will not install, remove it and reinstall the original app.
