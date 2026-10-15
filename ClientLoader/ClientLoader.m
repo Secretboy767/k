@@ -69,9 +69,6 @@ static UIWindow *ClientLoaderFindWindow(void) {
             if (window.isKeyWindow) return window;
         }
     }
-    for (UIWindow *window in application.windows) {
-        if (window.isKeyWindow) return window;
-    }
     return nil;
 }
 

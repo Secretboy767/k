@@ -12,6 +12,7 @@ xcrun --sdk iphoneos clang \
   -dynamiclib \
   "$ROOT/ClientLoader.m" \
   -framework Foundation \
+  -framework CoreGraphics \
   -framework UIKit \
   -framework JavaScriptCore \
   -Wl,-install_name,@executable_path/Frameworks/ClientLoader.dylib \
