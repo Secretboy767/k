@@ -1,10 +1,17 @@
 #import <Foundation/Foundation.h>
 #import <JavaScriptCore/JavaScriptCore.h>
 #import <UIKit/UIKit.h>
+#import "providers/CLCameraProvider.h"
+#import "providers/CLDiagnostics.h"
+#import "providers/CLEntityProvider.h"
+#import "providers/CLEntityTypeRegistry.h"
+#import "providers/CLESPOverlay.h"
 #import <errno.h>
 #import <fcntl.h>
 #import <string.h>
 #import <unistd.h>
+
+// Live rendering consumes validated snapshots and camera state; the target engine adapter is not yet verified.
 
 @class ClientMenuPanel;
 
@@ -25,6 +32,12 @@ JSExportAs(exportJSON,
 JSExportAs(setSyntheticESPEnabled,
 - (void)setSyntheticESPEnabled:(BOOL)enabled
 );
+JSExportAs(setLiveESPEnabled,
+- (void)setLiveESPEnabled:(BOOL)enabled
+);
+JSExportAs(exportDiagnostics,
+- (NSString *)exportDiagnostics:(NSString *)fileName
+);
 @end
 
 @interface ClientMenuBridge : NSObject <ClientMenuAPI>
@@ -37,6 +50,7 @@ JSExportAs(setSyntheticESPEnabled,
 
 @interface ClientLoaderTarget : NSObject
 - (void)runCustomAction:(UIButton *)sender;
+- (void)updateLiveESP:(CADisplayLink *)displayLink;
 @end
 
 @interface ClientDraggableButton : UIButton
@@ -69,6 +83,9 @@ static ClientLoaderTarget *sTarget;
 static ClientMenuPanel *sMenuPanel;
 static ClientESPSyntheticOverlay *sESPSyntheticOverlay;
 static BOOL sESPSyntheticOverlayEnabled;
+static CLESPOverlay *sLiveESPLayer;
+static CADisplayLink *sLiveESPDisplayLink;
+static BOOL sLiveESPEnabled;
 static BOOL sScriptsLoaded;
 static NSUInteger sWindowLookupAttempts;
 static NSObject *sLogLock;
@@ -80,9 +97,13 @@ static void ClientLoaderRenderCustomButtons(void);
 static void ClientLoaderSaveMenuButtonPosition(void);
 static void ClientLoaderClampButton(UIButton *button, UIWindow *window);
 static void ClientLoaderSetESPSyntheticOverlayEnabled(BOOL enabled);
+static void ClientLoaderSetLiveESPEnabled(BOOL enabled);
 
 static void ClientLoaderLog(NSString *message) {
     NSLog(@"[ClientLoader] %@", message);
+    if ([message hasPrefix:@"ERROR:"] || [message hasPrefix:@"FATAL:"]) {
+        [CLDiagnostics recordError:message];
+    }
 
     @synchronized (sLogLock) {
         NSURL *documentsURL = [[[NSFileManager defaultManager]
@@ -138,9 +159,10 @@ static void ClientLoaderLog(NSString *message) {
 
 static void ClientLoaderHandleUncaughtException(NSException *exception) {
     NSString *stack = [exception.callStackSymbols componentsJoinedByString:@"\n"];
-    ClientLoaderLog([NSString stringWithFormat:
+    NSString *message = [NSString stringWithFormat:
         @"FATAL: uncaught Objective-C exception %@: %@\nCall stack:\n%@",
-        exception.name, exception.reason ?: @"(no reason)", stack]);
+        exception.name, exception.reason ?: @"(no reason)", stack];
+    ClientLoaderLog(message);
     if (sPreviousUncaughtExceptionHandler &&
         sPreviousUncaughtExceptionHandler != ClientLoaderHandleUncaughtException) {
         sPreviousUncaughtExceptionHandler(exception);
@@ -322,6 +344,25 @@ static UIColor *ClientColor(NSString *hex, CGFloat alpha) {
     dispatch_async(dispatch_get_main_queue(), ^{
         ClientLoaderSetESPSyntheticOverlayEnabled(enabled);
     });
+}
+
+- (void)setLiveESPEnabled:(BOOL)enabled {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ClientLoaderSetLiveESPEnabled(enabled);
+    });
+}
+
+- (NSString *)exportDiagnostics:(NSString *)fileName {
+    NSError *error = nil;
+    NSString *path = [CLDiagnostics writeRuntimeReportToDocumentsFile:fileName error:&error];
+    if (!path) {
+        ClientLoaderLog([NSString stringWithFormat:
+            @"ERROR: live ESP diagnostic export failed: %@", error]);
+        return nil;
+    }
+    ClientLoaderLog([NSString stringWithFormat:
+        @"Exported live ESP diagnostic report to %@", path]);
+    return path;
 }
 
 @end
@@ -796,6 +837,45 @@ static void ClientLoaderSetESPSyntheticOverlayEnabled(BOOL enabled) {
     ClientLoaderLog(@"Synthetic ESP test boxes enabled; markers are not live entities");
 }
 
+static void ClientLoaderSetLiveESPEnabled(BOOL enabled) {
+    sLiveESPEnabled = enabled;
+    if (!enabled) {
+        [sLiveESPDisplayLink invalidate];
+        sLiveESPDisplayLink = nil;
+        [sLiveESPLayer removeFromSuperview];
+        sLiveESPLayer = nil;
+        ClientLoaderLog(@"Live ESP disabled");
+        return;
+    }
+
+    UIWindow *window = sBridge.window ?: ClientLoaderFindWindow();
+    if (!window) {
+        ClientLoaderLog(@"ERROR: cannot enable live ESP without an active window");
+        return;
+    }
+    if (!sTarget) sTarget = [ClientLoaderTarget new];
+    if (sLiveESPLayer.superview != window) {
+        [sLiveESPLayer removeFromSuperview];
+        sLiveESPLayer = [[CLESPOverlay alloc] initWithFrame:window.bounds];
+        sLiveESPLayer.autoresizingMask =
+            UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [window addSubview:sLiveESPLayer];
+    }
+    sLiveESPLayer.enabled = YES;
+    [window bringSubviewToFront:sLiveESPLayer];
+    if (sMenuButton.superview == window) [window bringSubviewToFront:sMenuButton];
+    if (!sLiveESPDisplayLink) {
+        sLiveESPDisplayLink = [CADisplayLink displayLinkWithTarget:sTarget
+                                                          selector:@selector(updateLiveESP:)];
+        sLiveESPDisplayLink.preferredFramesPerSecond = 15;
+        [sLiveESPDisplayLink addToRunLoop:NSRunLoop.mainRunLoop
+                                  forMode:NSRunLoopCommonModes];
+    }
+    ClientLoaderLog([NSString stringWithFormat:
+        @"Live ESP enabled; entity provider=%@, camera provider=%@",
+        [CLEntityProvider statusDescription], [CLCameraProvider statusDescription]]);
+}
+
 static void ClientLoaderSaveMenuButtonPosition(void) {
     UIWindow *window = sBridge.window;
     if (!window || CGRectGetWidth(window.bounds) <= 0 || CGRectGetHeight(window.bounds) <= 0) return;
@@ -921,6 +1001,7 @@ static void ClientLoaderInstallButton(UIWindow *window) {
         ClientLoaderClampButton(sMenuButton, window);
         ClientLoaderRenderCustomButtons();
         if (sESPSyntheticOverlayEnabled) ClientLoaderSetESPSyntheticOverlayEnabled(YES);
+        if (sLiveESPEnabled) ClientLoaderSetLiveESPEnabled(YES);
         return;
     }
     [sMenuButton removeFromSuperview];
@@ -954,12 +1035,19 @@ static void ClientLoaderInstallButton(UIWindow *window) {
     ClientLoaderClampButton(sMenuButton, window);
     ClientLoaderRenderCustomButtons();
     if (sESPSyntheticOverlayEnabled) ClientLoaderSetESPSyntheticOverlayEnabled(YES);
+    if (sLiveESPEnabled) ClientLoaderSetLiveESPEnabled(YES);
     ClientLoaderLog([NSString stringWithFormat:
         @"Installed draggable menu button at %@",
         NSStringFromCGPoint(sMenuButton.center)]);
 }
 
 @implementation ClientLoaderTarget
+
+- (void)updateLiveESP:(CADisplayLink *)displayLink {
+    (void)displayLink;
+    if (!sLiveESPEnabled || !sLiveESPLayer) return;
+    [sLiveESPLayer updateWithSnapshots:[CLEntityProvider latestSnapshots]];
+}
 
 - (void)runCustomAction:(UIButton *)sender {
     NSString *title = sender.accessibilityIdentifier;
@@ -1001,8 +1089,8 @@ static void ClientLoaderLoadScripts(void) {
     sBridge.context = sContext;
     sContext[@"ClientMenu"] = sBridge;
     sContext.exceptionHandler = ^(JSContext *context, JSValue *exception) {
-        ClientLoaderLog([NSString stringWithFormat:
-            @"ERROR: JavaScript exception: %@", exception]);
+        NSString *message = [NSString stringWithFormat:@"ERROR: JavaScript exception: %@", exception];
+        ClientLoaderLog(message);
     };
 
     NSError *listingError = nil;
@@ -1044,6 +1132,21 @@ static void ClientLoaderLoadScripts(void) {
 }
 
 static void ClientLoaderStart(void) {
+    static dispatch_once_t registryLoadOnce;
+    dispatch_once(&registryLoadOnce, ^{
+        NSError *error = nil;
+        if ([CLEntityTypeRegistry loadRegistryFromDocumentsWithError:&error]) {
+            NSDictionary *report = [CLEntityTypeRegistry diagnostics];
+            ClientLoaderLog([NSString stringWithFormat:
+                @"Loaded %lu entity type definition(s) from registry (%@).",
+                (unsigned long)[report[@"loadedIdentifierCount"] unsignedIntegerValue],
+                report[@"sourceDirectory"]]);
+        } else {
+            ClientLoaderLog([NSString stringWithFormat:
+                @"ERROR: entity type registry unavailable: %@",
+                error.localizedDescription ?: @"unknown registry error"]);
+        }
+    });
     ClientLoaderLoadScripts();
     UIWindow *window = ClientLoaderFindWindow();
     if (window) {

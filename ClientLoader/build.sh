@@ -11,6 +11,12 @@ xcrun --sdk iphoneos clang \
   -fobjc-arc \
   -dynamiclib \
   "$ROOT/ClientLoader.m" \
+  "$ROOT/providers/CLProjection.c" \
+  "$ROOT/providers/CLEntityProvider.m" \
+  "$ROOT/providers/CLEntityTypeRegistry.m" \
+  "$ROOT/providers/CLCameraProvider.m" \
+  "$ROOT/providers/CLESPOverlay.m" \
+  "$ROOT/providers/CLDiagnostics.m" \
   -framework Foundation \
   -framework CoreGraphics \
   -framework UIKit \
