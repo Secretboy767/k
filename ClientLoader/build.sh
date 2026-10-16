@@ -19,6 +19,7 @@ xcrun --sdk iphoneos clang \
   "$ROOT/providers/CLDiagnostics.m" \
   -framework Foundation \
   -framework CoreGraphics \
+  -framework QuartzCore \
   -framework UIKit \
   -framework JavaScriptCore \
   -Wl,-install_name,@executable_path/Frameworks/ClientLoader.dylib \
