@@ -25,10 +25,14 @@ JSExportAs(isFeatureEnabled,
 - (void)setFeature:(NSString *)title enabled:(BOOL)enabled;
 @end
 
-@interface ClientLoaderTarget : NSObject <UIGestureRecognizerDelegate>
-- (void)openMenu;
-- (void)openMenuPanel;
+@interface ClientLoaderTarget : NSObject
 - (void)runCustomAction:(UIButton *)sender;
+@end
+
+@interface ClientDraggableButton : UIButton
+@property(nonatomic) CGPoint touchStart;
+@property(nonatomic) CGPoint initialCenter;
+@property(nonatomic) BOOL didMove;
 @end
 
 @interface ClientMenuPanel : UIView
@@ -52,11 +56,12 @@ static ClientLoaderTarget *sTarget;
 static ClientMenuPanel *sMenuPanel;
 static BOOL sScriptsLoaded;
 static NSUInteger sWindowLookupAttempts;
-static CGPoint sDragStartCenter;
 
 static void ClientMenuOpen(void);
 static void ClientMenuRefresh(void);
 static void ClientLoaderRenderCustomButtons(void);
+static void ClientLoaderSaveMenuButtonPosition(void);
+static void ClientLoaderClampButton(UIButton *button, UIWindow *window);
 
 static BOOL ClientLoaderHapticsEnabled(void) {
     id savedValue = [NSUserDefaults.standardUserDefaults objectForKey:kClientLoaderHapticsKey];
@@ -513,6 +518,7 @@ static UIWindow *ClientLoaderFindWindow(void) {
 static void ClientMenuOpen(void) {
     if (!sBridge.window) return;
     if (sMenuPanel.superview) {
+        NSLog(@"[ClientLoader] Closing client panel");
         [sMenuPanel removeFromSuperview];
         sMenuPanel = nil;
         return;
@@ -520,6 +526,8 @@ static void ClientMenuOpen(void) {
     sMenuPanel = [[ClientMenuPanel alloc] initWithWindow:sBridge.window bridge:sBridge];
     sMenuPanel.alpha = 0;
     [sBridge.window addSubview:sMenuPanel];
+    [sBridge.window bringSubviewToFront:sMenuPanel];
+    NSLog(@"[ClientLoader] Opened client panel in window %@", sBridge.window);
     [UIView animateWithDuration:0.18 animations:^{ sMenuPanel.alpha = 1; }];
 }
 
@@ -600,6 +608,53 @@ static void ClientLoaderRenderCustomButtons(void) {
     }
 }
 
+@implementation ClientDraggableButton
+
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    (void)event;
+    UITouch *touch = touches.anyObject;
+    UIWindow *window = self.window;
+    if (!touch || !window) return;
+    self.touchStart = [touch locationInView:window];
+    self.initialCenter = self.center;
+    self.didMove = NO;
+    self.alpha = 0.82;
+}
+
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    (void)event;
+    UITouch *touch = touches.anyObject;
+    UIWindow *window = self.window;
+    if (!touch || !window) return;
+    CGPoint location = [touch locationInView:window];
+    CGFloat dx = location.x - self.touchStart.x;
+    CGFloat dy = location.y - self.touchStart.y;
+    if (!self.didMove && hypot(dx, dy) < 8.0) return;
+    self.didMove = YES;
+    self.center = CGPointMake(self.initialCenter.x + dx, self.initialCenter.y + dy);
+    ClientLoaderClampButton(self, window);
+}
+
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    (void)touches;
+    (void)event;
+    self.alpha = 1.0;
+    if (self.didMove) {
+        ClientLoaderSaveMenuButtonPosition();
+    } else {
+        ClientMenuOpen();
+    }
+}
+
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    (void)touches;
+    (void)event;
+    self.alpha = 1.0;
+    if (self.didMove) ClientLoaderSaveMenuButtonPosition();
+}
+
+@end
+
 static void ClientLoaderInstallButton(UIWindow *window) {
     sBridge.window = window;
     if (sMenuButton && sMenuButton.superview == window) {
@@ -609,7 +664,7 @@ static void ClientLoaderInstallButton(UIWindow *window) {
     }
     [sMenuButton removeFromSuperview];
     CGFloat side = 54.0;
-    sMenuButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    sMenuButton = [ClientDraggableButton buttonWithType:UIButtonTypeSystem];
     sMenuButton.bounds = CGRectMake(0, 0, side, side);
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
     double savedX = [defaults doubleForKey:kClientLoaderButtonXKey];
@@ -628,72 +683,21 @@ static void ClientLoaderInstallButton(UIWindow *window) {
     [sMenuButton setTitle:@"C" forState:UIControlStateNormal];
     [sMenuButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
     sMenuButton.titleLabel.font = [UIFont systemFontOfSize:22 weight:UIFontWeightHeavy];
+    sMenuButton.userInteractionEnabled = YES;
+    sMenuButton.multipleTouchEnabled = NO;
+    sMenuButton.exclusiveTouch = YES;
     sMenuButton.accessibilityLabel = @"Drag or open Client Menu";
     sMenuButton.accessibilityHint = @"Drag to move; tap to open the client panel";
     if (!sTarget) sTarget = [ClientLoaderTarget new];
-    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc]
-        initWithTarget:sTarget action:@selector(openMenu)];
-    pan.minimumNumberOfTouches = 1;
-    pan.maximumNumberOfTouches = 1;
-    pan.cancelsTouchesInView = NO;
-    pan.delegate = sTarget;
-    [sMenuButton addGestureRecognizer:pan];
-    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc]
-        initWithTarget:sTarget action:@selector(openMenuPanel)];
-    tap.delegate = sTarget;
-    [sMenuButton addGestureRecognizer:tap];
     [window addSubview:sMenuButton];
     ClientLoaderClampButton(sMenuButton, window);
     ClientLoaderRenderCustomButtons();
+    NSLog(@"[ClientLoader] Installed draggable menu button at %@ in window %@",
+          NSStringFromCGPoint(sMenuButton.center),
+          window);
 }
 
 @implementation ClientLoaderTarget
-
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
-       shouldReceiveTouch:(UITouch *)touch {
-    (void)gestureRecognizer;
-    (void)touch;
-    return YES;
-}
-
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
-shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
-    (void)gestureRecognizer;
-    (void)otherGestureRecognizer;
-    return YES;
-}
-
-- (void)openMenu {
-    UIPanGestureRecognizer *pan = (UIPanGestureRecognizer *)sMenuButton.gestureRecognizers.firstObject;
-    if (![pan isKindOfClass:UIPanGestureRecognizer.class]) return;
-    UIWindow *window = sBridge.window;
-    if (!window) return;
-    switch (pan.state) {
-        case UIGestureRecognizerStateBegan:
-            sDragStartCenter = sMenuButton.center;
-            break;
-        case UIGestureRecognizerStateChanged: {
-            CGPoint translation = [pan translationInView:window];
-            sMenuButton.center = CGPointMake(sDragStartCenter.x + translation.x,
-                                             sDragStartCenter.y + translation.y);
-            ClientLoaderClampButton(sMenuButton, window);
-            break;
-        }
-        case UIGestureRecognizerStateEnded: {
-            CGPoint translation = [pan translationInView:window];
-            if (hypot(translation.x, translation.y) >= 8.0) {
-                ClientLoaderSaveMenuButtonPosition();
-            }
-            break;
-        }
-        default:
-            break;
-    }
-}
-
-- (void)openMenuPanel {
-    ClientMenuOpen();
-}
 
 - (void)runCustomAction:(UIButton *)sender {
     NSString *title = sender.accessibilityIdentifier;

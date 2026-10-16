@@ -19,11 +19,11 @@ Documents/ClientLoader/scripts/*.js
 
 The loader does not evaluate JavaScript placed arbitrarily in Documents: scripts in that specific directory are explicitly enumerated and passed to JavaScriptCore. The `.js` files are content interpreted by the bundled JavaScriptCore framework; they are not native code.
 
-The original app signature is invalidated by changing the executable. eSign must sign the modified executable and embedded dylib together. This workflow has been tested for successful launch and visible UI on the user's device; further client features still need on-device testing.
+The original app signature is invalidated by changing the executable. eSign must sign the modified executable and embedded dylib together. An earlier build showed a floating button on-device, but the full panel and the direct-touch drag/tap handling in the current source have not yet been confirmed on-device.
 
 ## Current client panel
 
-The floating purple **C** button can be dragged around the screen; its position is saved. Tapping it opens a dark rounded panel with:
+The floating purple **C** button uses direct touch handling: a short touch opens the panel; moving it by at least 8 points drags it and saves its normalized screen position. The panel is explicitly added above the active game window. Tapping it opens a dark rounded panel with:
 
 - **Features**: native toggles for the quick-button bar and haptic feedback, plus persistent Boolean features registered by local scripts.
 - **Buttons**: add or remove floating on-screen buttons for script actions.
@@ -33,7 +33,7 @@ These are actual UI/preferences, not Minecraft gameplay features. There is curre
 
 ## Connection to 3105
 
-3105 is the **data/script installer**, not the native code loader:
+3105 is optional and is only the **data/script installer**, not the native code loader. The built-in floating C button, panel, native switches and native custom-action-button UI do not depend on a 3105 patch; that is why they remain visible when the patch is disabled. 3105 is only needed when you want to add or update JavaScript features/actions without rebuilding the dylib:
 
 - The modified IPA installs the native loader in Minecraft's app bundle. eSign signs and installs this IPA.
 - Once installed, 3105 applies a data-only `.3105` patch to Minecraft's Application container.
@@ -69,14 +69,14 @@ Feature values are saved by name on-device and restored when the script register
 
 ## Build without owning a Mac
 
-The repository includes a GitHub Actions workflow that builds the iOS arm64 dylib on a hosted macOS/Xcode runner. No Minecraft files are uploaded to GitHub by this workflow.
+The repository includes a GitHub Actions workflow that builds only the iOS arm64 dylib on a hosted macOS/Xcode runner. No Minecraft IPA or app bundle is uploaded to GitHub.
 
 1. Commit and push only the loader source, 3105 sample script, and `.github/workflows/build-ios-client-loader.yml` to a GitHub repository where Actions are enabled. Do not add the supplied Minecraft IPA or `Payload/` to Git.
 2. In GitHub, open **Actions → Build iOS Client Loader → Run workflow** (or wait for the workflow to run after pushing those files).
 3. When the run succeeds, download the `minecraft-client-loader-ios-arm64` artifact. It contains `ClientLoader.dylib` and its SHA-256 checksum.
-4. Put the downloaded dylib in this workspace, then package the local Minecraft app as described below. This keeps the game IPA off GitHub.
+4. Download `ClientLoader.dylib` from the artifact. If you only want the dylib, stop here; no IPA packaging step is required.
 
-The workflow is in `.github/workflows/build-ios-client-loader.yml`. This workspace currently has no GitHub CLI authentication, so it cannot push or start the workflow on your behalf.
+The workflow is in `.github/workflows/build-ios-client-loader.yml`. A new dylib build is required after changing `ClientLoader.m`; editing JavaScript files alone does not require rebuilding the dylib.
 
 ## Package and sign
 
