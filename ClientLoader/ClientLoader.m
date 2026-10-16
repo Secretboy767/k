@@ -1,6 +1,10 @@
 #import <Foundation/Foundation.h>
 #import <JavaScriptCore/JavaScriptCore.h>
 #import <UIKit/UIKit.h>
+#import <errno.h>
+#import <fcntl.h>
+#import <string.h>
+#import <unistd.h>
 
 @class ClientMenuPanel;
 
@@ -56,12 +60,80 @@ static ClientLoaderTarget *sTarget;
 static ClientMenuPanel *sMenuPanel;
 static BOOL sScriptsLoaded;
 static NSUInteger sWindowLookupAttempts;
+static NSObject *sLogLock;
+static NSUncaughtExceptionHandler *sPreviousUncaughtExceptionHandler;
 
 static void ClientMenuOpen(void);
 static void ClientMenuRefresh(void);
 static void ClientLoaderRenderCustomButtons(void);
 static void ClientLoaderSaveMenuButtonPosition(void);
 static void ClientLoaderClampButton(UIButton *button, UIWindow *window);
+
+static void ClientLoaderLog(NSString *message) {
+    NSLog(@"[ClientLoader] %@", message);
+
+    @synchronized (sLogLock) {
+        NSURL *documentsURL = [[[NSFileManager defaultManager]
+            URLsForDirectory:NSDocumentDirectory
+                   inDomains:NSUserDomainMask] firstObject];
+        if (!documentsURL) {
+            NSLog(@"[ClientLoader] Could not locate Documents directory for log file");
+            return;
+        }
+
+        NSURL *directoryURL = [documentsURL URLByAppendingPathComponent:@"ClientLoader"
+                                                            isDirectory:YES];
+        NSError *directoryError = nil;
+        if (![[NSFileManager defaultManager] createDirectoryAtURL:directoryURL
+                                      withIntermediateDirectories:YES
+                                                       attributes:nil
+                                                            error:&directoryError]) {
+            NSLog(@"[ClientLoader] Could not create log directory: %@", directoryError);
+            return;
+        }
+
+        NSURL *logURL = [directoryURL URLByAppendingPathComponent:@"ClientLoader.log"];
+        int descriptor = open(logURL.fileSystemRepresentation, O_WRONLY | O_CREAT | O_APPEND, 0600);
+        if (descriptor < 0) {
+            NSLog(@"[ClientLoader] Could not open log file: %s", strerror(errno));
+            return;
+        }
+
+        NSDateFormatter *formatter = [NSDateFormatter new];
+        formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+        formatter.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
+        formatter.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
+        NSString *line = [NSString stringWithFormat:@"%@ %@\n",
+                          [formatter stringFromDate:[NSDate date]], message];
+        NSData *data = [line dataUsingEncoding:NSUTF8StringEncoding];
+        const uint8_t *bytes = data.bytes;
+        size_t remaining = data.length;
+        while (remaining > 0) {
+            ssize_t written = write(descriptor, bytes, remaining);
+            if (written < 0 && errno == EINTR) continue;
+            if (written <= 0) {
+                int writeError = errno;
+                close(descriptor);
+                NSLog(@"[ClientLoader] Could not write log file: %s", strerror(writeError));
+                return;
+            }
+            bytes += written;
+            remaining -= (size_t)written;
+        }
+        close(descriptor);
+    }
+}
+
+static void ClientLoaderHandleUncaughtException(NSException *exception) {
+    NSString *stack = [exception.callStackSymbols componentsJoinedByString:@"\n"];
+    ClientLoaderLog([NSString stringWithFormat:
+        @"FATAL: uncaught Objective-C exception %@: %@\nCall stack:\n%@",
+        exception.name, exception.reason ?: @"(no reason)", stack]);
+    if (sPreviousUncaughtExceptionHandler &&
+        sPreviousUncaughtExceptionHandler != ClientLoaderHandleUncaughtException) {
+        sPreviousUncaughtExceptionHandler(exception);
+    }
+}
 
 static BOOL ClientLoaderHapticsEnabled(void) {
     id savedValue = [NSUserDefaults.standardUserDefaults objectForKey:kClientLoaderHapticsKey];
@@ -92,7 +164,7 @@ static UIColor *ClientColor(NSString *hex, CGFloat alpha) {
 
 - (void)registerAction:(NSString *)title callback:(JSValue *)callback {
     if (title.length == 0 || !callback || !callback.isObject) {
-        NSLog(@"[ClientLoader] Ignored invalid action registration");
+        ClientLoaderLog(@"ERROR: ignored invalid action registration");
         return;
     }
     NSIndexSet *existing = [self.actions indexesOfObjectsPassingTest:^BOOL(
@@ -106,7 +178,7 @@ static UIColor *ClientColor(NSString *hex, CGFloat alpha) {
 
 - (void)registerFeature:(NSString *)title enabled:(BOOL)enabled callback:(JSValue *)callback {
     if (title.length == 0 || !callback || !callback.isObject) {
-        NSLog(@"[ClientLoader] Ignored invalid feature registration");
+        ClientLoaderLog(@"ERROR: ignored invalid feature registration");
         return;
     }
     NSIndexSet *existing = [self.features indexesOfObjectsPassingTest:^BOOL(
@@ -269,14 +341,16 @@ static UIColor *ClientColor(NSString *hex, CGFloat alpha) {
     footer.translatesAutoresizingMaskIntoConstraints = NO;
     [_card addSubview:footer];
 
-    UILayoutGuide *safe = window.safeAreaLayoutGuide;
+    UILayoutGuide *safe = self.safeAreaLayoutGuide;
+    NSLayoutConstraint *cardWidth =
+        [_card.widthAnchor constraintEqualToAnchor:safe.widthAnchor multiplier:0.91];
+    cardWidth.priority = UILayoutPriorityDefaultHigh;
     [NSLayoutConstraint activateConstraints:@[
         [_card.centerXAnchor constraintEqualToAnchor:safe.centerXAnchor],
         [_card.centerYAnchor constraintEqualToAnchor:safe.centerYAnchor],
-        [_card.widthAnchor constraintEqualToAnchor:safe.widthAnchor multiplier:0.91],
+        cardWidth,
         [_card.widthAnchor constraintLessThanOrEqualToConstant:460],
         [_card.heightAnchor constraintEqualToAnchor:safe.heightAnchor multiplier:0.78],
-        [_card.heightAnchor constraintGreaterThanOrEqualToConstant:300],
         [heading.topAnchor constraintEqualToAnchor:_card.topAnchor constant:18],
         [heading.leadingAnchor constraintEqualToAnchor:_card.leadingAnchor constant:19],
         [heading.trailingAnchor constraintEqualToAnchor:_card.trailingAnchor constant:-17],
@@ -516,19 +590,33 @@ static UIWindow *ClientLoaderFindWindow(void) {
 }
 
 static void ClientMenuOpen(void) {
-    if (!sBridge.window) return;
+    if (!sBridge.window) {
+        ClientLoaderLog(@"ERROR: menu open requested before an active window was available");
+        return;
+    }
     if (sMenuPanel.superview) {
-        NSLog(@"[ClientLoader] Closing client panel");
+        ClientLoaderLog(@"Closing client panel");
         [sMenuPanel removeFromSuperview];
         sMenuPanel = nil;
         return;
     }
-    sMenuPanel = [[ClientMenuPanel alloc] initWithWindow:sBridge.window bridge:sBridge];
-    sMenuPanel.alpha = 0;
-    [sBridge.window addSubview:sMenuPanel];
-    [sBridge.window bringSubviewToFront:sMenuPanel];
-    NSLog(@"[ClientLoader] Opened client panel in window %@", sBridge.window);
-    [UIView animateWithDuration:0.18 animations:^{ sMenuPanel.alpha = 1; }];
+    ClientLoaderLog(@"Opening client panel");
+    @try {
+        ClientMenuPanel *panel = [[ClientMenuPanel alloc]
+            initWithWindow:sBridge.window bridge:sBridge];
+        panel.alpha = 0;
+        [sBridge.window addSubview:panel];
+        [sBridge.window bringSubviewToFront:panel];
+        sMenuPanel = panel;
+        ClientLoaderLog(@"Opened client panel");
+        [UIView animateWithDuration:0.18 animations:^{ panel.alpha = 1; }];
+    } @catch (NSException *exception) {
+        sMenuPanel = nil;
+        ClientLoaderLog([NSString stringWithFormat:
+            @"ERROR: could not open client panel (%@): %@\nCall stack:\n%@",
+            exception.name, exception.reason ?: @"(no reason)",
+            [exception.callStackSymbols componentsJoinedByString:@"\n"]]);
+    }
 }
 
 static void ClientMenuRefresh(void) {
@@ -692,9 +780,9 @@ static void ClientLoaderInstallButton(UIWindow *window) {
     [window addSubview:sMenuButton];
     ClientLoaderClampButton(sMenuButton, window);
     ClientLoaderRenderCustomButtons();
-    NSLog(@"[ClientLoader] Installed draggable menu button at %@ in window %@",
-          NSStringFromCGPoint(sMenuButton.center),
-          window);
+    ClientLoaderLog([NSString stringWithFormat:
+        @"Installed draggable menu button at %@",
+        NSStringFromCGPoint(sMenuButton.center)]);
 }
 
 @implementation ClientLoaderTarget
@@ -728,7 +816,8 @@ static void ClientLoaderLoadScripts(void) {
                                   withIntermediateDirectories:YES
                                                    attributes:nil
                                                         error:&directoryError]) {
-        NSLog(@"[ClientLoader] Could not create script directory: %@", directoryError);
+        ClientLoaderLog([NSString stringWithFormat:
+            @"ERROR: could not create script directory: %@", directoryError]);
         return;
     }
     sScriptsLoaded = YES;
@@ -738,7 +827,8 @@ static void ClientLoaderLoadScripts(void) {
     sBridge.context = sContext;
     sContext[@"ClientMenu"] = sBridge;
     sContext.exceptionHandler = ^(JSContext *context, JSValue *exception) {
-        NSLog(@"[ClientLoader] JavaScript exception: %@", exception);
+        ClientLoaderLog([NSString stringWithFormat:
+            @"ERROR: JavaScript exception: %@", exception]);
     };
 
     NSError *listingError = nil;
@@ -748,7 +838,8 @@ static void ClientLoaderLoadScripts(void) {
                           options:NSDirectoryEnumerationSkipsHiddenFiles
                             error:&listingError];
     if (!items) {
-        NSLog(@"[ClientLoader] Could not list scripts: %@", listingError);
+        ClientLoaderLog([NSString stringWithFormat:
+            @"ERROR: could not list scripts: %@", listingError]);
         return;
     }
 
@@ -766,14 +857,16 @@ static void ClientLoaderLoadScripts(void) {
                                                    encoding:NSUTF8StringEncoding
                                                       error:&readError];
         if (!source) {
-            NSLog(@"[ClientLoader] Could not read %@: %@", scriptURL.lastPathComponent, readError);
+            ClientLoaderLog([NSString stringWithFormat:
+                @"ERROR: could not read script %@: %@",
+                scriptURL.lastPathComponent, readError]);
             continue;
         }
         [sContext evaluateScript:source withSourceURL:scriptURL];
     }
-    NSLog(@"[ClientLoader] Loaded %lu JavaScript file(s) from %@",
-          (unsigned long)scripts.count,
-          scriptDirectory.path);
+    ClientLoaderLog([NSString stringWithFormat:
+        @"Loaded %lu JavaScript file(s) from %@",
+        (unsigned long)scripts.count, scriptDirectory.path]);
 }
 
 static void ClientLoaderStart(void) {
@@ -785,7 +878,7 @@ static void ClientLoaderStart(void) {
         return;
     }
     if (++sWindowLookupAttempts > 120) {
-        NSLog(@"[ClientLoader] Gave up waiting for an active app window");
+        ClientLoaderLog(@"ERROR: gave up waiting for an active app window");
         return;
     }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
@@ -796,6 +889,10 @@ static void ClientLoaderStart(void) {
 __attribute__((constructor))
 static void ClientLoaderInitialize(void) {
     @autoreleasepool {
+        sLogLock = [NSObject new];
+        sPreviousUncaughtExceptionHandler = NSGetUncaughtExceptionHandler();
+        NSSetUncaughtExceptionHandler(&ClientLoaderHandleUncaughtException);
+        ClientLoaderLog(@"Native loader initialized");
         dispatch_async(dispatch_get_main_queue(), ^{
             [[NSNotificationCenter defaultCenter]
                 addObserverForName:UIApplicationDidBecomeActiveNotification

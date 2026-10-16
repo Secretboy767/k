@@ -19,7 +19,17 @@ Documents/ClientLoader/scripts/*.js
 
 The loader does not evaluate JavaScript placed arbitrarily in Documents: scripts in that specific directory are explicitly enumerated and passed to JavaScriptCore. The `.js` files are content interpreted by the bundled JavaScriptCore framework; they are not native code.
 
-The original app signature is invalidated by changing the executable. eSign must sign the modified executable and embedded dylib together. An earlier build showed a floating button on-device, but the full panel and the direct-touch drag/tap handling in the current source have not yet been confirmed on-device.
+The original app signature is invalidated by changing the executable. eSign must sign the modified executable and embedded dylib together. The floating button and dragging are confirmed on-device. The previous build crashed when opening the panel; the updated source fixes the panel's constraint hierarchy and adds diagnostics, but needs a new dylib build and on-device test.
+
+## Diagnostics
+
+The loader writes startup, menu open/close, script-loading, JavaScript exception, and UI error details to:
+
+```text
+Documents/ClientLoader/ClientLoader.log
+```
+
+It also installs an Objective-C uncaught-exception handler that records the exception reason and call stack. This does not guarantee a log for every native crash, such as a forced termination or low-level memory fault. The messages are also sent to the iOS system log with `NSLog`. 3105's own console is not directly connected to Minecraft's native process logs; use its file browser to retrieve the log if it can access Minecraft's Documents container.
 
 ## Current client panel
 
