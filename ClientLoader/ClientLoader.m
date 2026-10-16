@@ -19,6 +19,12 @@ JSExportAs(isFeatureEnabled,
 - (BOOL)isFeatureEnabled:(NSString *)title
 );
 - (void)notify:(NSString *)message;
+JSExportAs(exportJSON,
+- (NSString *)exportJSON:(NSString *)json fileName:(NSString *)fileName
+);
+JSExportAs(setSyntheticESPEnabled,
+- (void)setSyntheticESPEnabled:(BOOL)enabled
+);
 @end
 
 @interface ClientMenuBridge : NSObject <ClientMenuAPI>
@@ -44,6 +50,9 @@ JSExportAs(isFeatureEnabled,
 - (void)reloadContent;
 @end
 
+@interface ClientESPSyntheticOverlay : UIView
+@end
+
 static NSString *const kClientLoaderHapticsKey = @"ClientLoader.haptics";
 static NSString *const kClientLoaderButtonsVisibleKey = @"ClientLoader.customButtonsVisible";
 static NSString *const kClientLoaderButtonTitlesKey = @"ClientLoader.customButtonTitles";
@@ -58,6 +67,8 @@ static UIButton *sMenuButton;
 static UIStackView *sCustomButtonStack;
 static ClientLoaderTarget *sTarget;
 static ClientMenuPanel *sMenuPanel;
+static ClientESPSyntheticOverlay *sESPSyntheticOverlay;
+static BOOL sESPSyntheticOverlayEnabled;
 static BOOL sScriptsLoaded;
 static NSUInteger sWindowLookupAttempts;
 static NSObject *sLogLock;
@@ -68,6 +79,7 @@ static void ClientMenuRefresh(void);
 static void ClientLoaderRenderCustomButtons(void);
 static void ClientLoaderSaveMenuButtonPosition(void);
 static void ClientLoaderClampButton(UIButton *button, UIWindow *window);
+static void ClientLoaderSetESPSyntheticOverlayEnabled(BOOL enabled);
 
 static void ClientLoaderLog(NSString *message) {
     NSLog(@"[ClientLoader] %@", message);
@@ -238,6 +250,77 @@ static UIColor *ClientColor(NSString *hex, CGFloat alpha) {
             presenter = presenter.presentedViewController;
         }
         if (presenter) [presenter presentViewController:alert animated:YES completion:nil];
+    });
+}
+
+- (NSString *)exportJSON:(NSString *)json fileName:(NSString *)fileName {
+    if (![json isKindOfClass:NSString.class] ||
+        ![fileName isKindOfClass:NSString.class] ||
+        json.length == 0 || fileName.length == 0) {
+        ClientLoaderLog(@"ERROR: rejected diagnostic export with missing input");
+        return nil;
+    }
+    NSRegularExpression *fileNamePattern = [NSRegularExpression
+        regularExpressionWithPattern:@"^[A-Za-z0-9_-]{1,64}\\.json$"
+                             options:0
+                               error:nil];
+    NSTextCheckingResult *match = [fileNamePattern firstMatchInString:fileName
+                                                              options:0
+                                                                range:NSMakeRange(0, fileName.length)];
+    if (!match || match.range.length != fileName.length) {
+        ClientLoaderLog(@"ERROR: rejected diagnostic export with an invalid file name");
+        return nil;
+    }
+
+    NSData *data = [json dataUsingEncoding:NSUTF8StringEncoding];
+    if (data.length == 0 || data.length > 1024 * 1024) {
+        ClientLoaderLog(@"ERROR: rejected diagnostic export with an invalid size");
+        return nil;
+    }
+    NSError *jsonError = nil;
+    id object = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
+    if (!object || jsonError) {
+        ClientLoaderLog([NSString stringWithFormat:
+            @"ERROR: rejected invalid diagnostic JSON: %@", jsonError]);
+        return nil;
+    }
+
+    NSURL *documentsURL = [[[NSFileManager defaultManager]
+        URLsForDirectory:NSDocumentDirectory
+               inDomains:NSUserDomainMask] firstObject];
+    if (!documentsURL) {
+        ClientLoaderLog(@"ERROR: could not locate Documents directory for diagnostic export");
+        return nil;
+    }
+    NSURL *directoryURL = [[documentsURL URLByAppendingPathComponent:@"ClientLoader"
+                                                        isDirectory:YES]
+        URLByAppendingPathComponent:@"exports" isDirectory:YES];
+    NSError *directoryError = nil;
+    if (![[NSFileManager defaultManager] createDirectoryAtURL:directoryURL
+                                  withIntermediateDirectories:YES
+                                                   attributes:nil
+                                                        error:&directoryError]) {
+        ClientLoaderLog([NSString stringWithFormat:
+            @"ERROR: could not create diagnostic export directory: %@", directoryError]);
+        return nil;
+    }
+
+    NSURL *fileURL = [directoryURL URLByAppendingPathComponent:fileName];
+    NSError *writeError = nil;
+    if (![data writeToURL:fileURL options:NSDataWritingAtomic error:&writeError]) {
+        ClientLoaderLog([NSString stringWithFormat:
+            @"ERROR: could not write diagnostic export: %@", writeError]);
+        return nil;
+    }
+    ClientLoaderLog([NSString stringWithFormat:
+        @"Exported diagnostic JSON (%lu bytes) to %@",
+        (unsigned long)data.length, fileURL.path]);
+    return fileURL.path;
+}
+
+- (void)setSyntheticESPEnabled:(BOOL)enabled {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ClientLoaderSetESPSyntheticOverlayEnabled(enabled);
     });
 }
 
@@ -575,6 +658,70 @@ static UIColor *ClientColor(NSString *hex, CGFloat alpha) {
 
 @end
 
+@implementation ClientESPSyntheticOverlay
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.backgroundColor = UIColor.clearColor;
+        self.userInteractionEnabled = NO;
+        self.opaque = NO;
+        self.contentMode = UIViewContentModeRedraw;
+        self.accessibilityLabel = @"Synthetic ESP test boxes, not live entities";
+    }
+    return self;
+}
+
+- (void)drawRect:(CGRect)rect {
+    (void)rect;
+    CGFloat width = CGRectGetWidth(self.bounds);
+    CGFloat height = CGRectGetHeight(self.bounds);
+    if (width < 160 || height < 240) return;
+
+    NSArray<NSDictionary *> *samples = @[
+        @{
+            @"label": @"TEST COW  •  NOT LIVE",
+            @"x": @(width * 0.16),
+            @"y": @(height * 0.31),
+            @"w": @(width * 0.25),
+            @"h": @(height * 0.23),
+            @"color": ClientColor(@"#64D98B", 0.96)
+        },
+        @{
+            @"label": @"TEST PLAYER  •  NOT LIVE",
+            @"x": @(width * 0.58),
+            @"y": @(height * 0.39),
+            @"w": @(width * 0.25),
+            @"h": @(height * 0.34),
+            @"color": ClientColor(@"#67B7FF", 0.96)
+        }
+    ];
+    NSDictionary *attributes = @{
+        NSFontAttributeName: [UIFont systemFontOfSize:10 weight:UIFontWeightBold],
+        NSForegroundColorAttributeName: UIColor.whiteColor
+    };
+    for (NSDictionary *sample in samples) {
+        CGRect box = CGRectMake([sample[@"x"] doubleValue],
+                                [sample[@"y"] doubleValue],
+                                [sample[@"w"] doubleValue],
+                                [sample[@"h"] doubleValue]);
+        UIColor *color = sample[@"color"];
+        UIBezierPath *path = [UIBezierPath bezierPathWithRect:box];
+        path.lineWidth = 2.0;
+        [color setStroke];
+        [path stroke];
+
+        CGRect labelRect = CGRectMake(box.origin.x,
+                                      MAX(8, box.origin.y - 18),
+                                      MIN(box.size.width + 100, width - box.origin.x),
+                                      16);
+        NSString *label = sample[@"label"];
+        [label drawInRect:labelRect withAttributes:attributes];
+    }
+}
+
+@end
+
 static UIWindow *ClientLoaderFindWindow(void) {
     UIApplication *application = UIApplication.sharedApplication;
     for (UIScene *scene in application.connectedScenes) {
@@ -622,6 +769,31 @@ static void ClientMenuOpen(void) {
 static void ClientMenuRefresh(void) {
     if (sMenuPanel.superview) [sMenuPanel reloadContent];
     ClientLoaderRenderCustomButtons();
+}
+
+static void ClientLoaderSetESPSyntheticOverlayEnabled(BOOL enabled) {
+    sESPSyntheticOverlayEnabled = enabled;
+    UIWindow *window = sBridge.window ?: ClientLoaderFindWindow();
+    if (!window) {
+        ClientLoaderLog(@"ERROR: cannot update synthetic ESP overlay without an active window");
+        return;
+    }
+    if (!enabled) {
+        [sESPSyntheticOverlay removeFromSuperview];
+        sESPSyntheticOverlay = nil;
+        ClientLoaderLog(@"Synthetic ESP test boxes disabled");
+        return;
+    }
+    if (sESPSyntheticOverlay.superview != window) {
+        [sESPSyntheticOverlay removeFromSuperview];
+        sESPSyntheticOverlay = [[ClientESPSyntheticOverlay alloc] initWithFrame:window.bounds];
+        sESPSyntheticOverlay.autoresizingMask =
+            UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [window addSubview:sESPSyntheticOverlay];
+    }
+    [window bringSubviewToFront:sESPSyntheticOverlay];
+    if (sMenuButton.superview == window) [window bringSubviewToFront:sMenuButton];
+    ClientLoaderLog(@"Synthetic ESP test boxes enabled; markers are not live entities");
 }
 
 static void ClientLoaderSaveMenuButtonPosition(void) {
@@ -748,6 +920,7 @@ static void ClientLoaderInstallButton(UIWindow *window) {
     if (sMenuButton && sMenuButton.superview == window) {
         ClientLoaderClampButton(sMenuButton, window);
         ClientLoaderRenderCustomButtons();
+        if (sESPSyntheticOverlayEnabled) ClientLoaderSetESPSyntheticOverlayEnabled(YES);
         return;
     }
     [sMenuButton removeFromSuperview];
@@ -780,6 +953,7 @@ static void ClientLoaderInstallButton(UIWindow *window) {
     [window addSubview:sMenuButton];
     ClientLoaderClampButton(sMenuButton, window);
     ClientLoaderRenderCustomButtons();
+    if (sESPSyntheticOverlayEnabled) ClientLoaderSetESPSyntheticOverlayEnabled(YES);
     ClientLoaderLog([NSString stringWithFormat:
         @"Installed draggable menu button at %@",
         NSStringFromCGPoint(sMenuButton.center)]);

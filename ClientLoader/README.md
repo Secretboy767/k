@@ -19,7 +19,9 @@ Documents/ClientLoader/scripts/*.js
 
 The loader does not evaluate JavaScript placed arbitrarily in Documents: scripts in that specific directory are explicitly enumerated and passed to JavaScriptCore. The `.js` files are content interpreted by the bundled JavaScriptCore framework; they are not native code.
 
-The original app signature is invalidated by changing the executable. eSign must sign the modified executable and embedded dylib together. The floating button and dragging are confirmed on-device. The previous build crashed when opening the panel; the updated source fixes the panel's constraint hierarchy and adds diagnostics, but needs a new dylib build and on-device test.
+The original app signature is invalidated by changing the executable. eSign must sign the modified executable and embedded dylib together. The floating button, dragging, and opening the panel are confirmed on-device. The current loader also writes diagnostic logs; a new dylib build is required to include any later native-code changes.
+
+No custom behavior pack or resource pack is part of this client. The supplied Minecraft app bundle's original built-in game data is left untouched.
 
 ## Diagnostics
 
@@ -39,7 +41,15 @@ The floating purple **C** button uses direct touch handling: a short touch opens
 - **Buttons**: add or remove floating on-screen buttons for script actions.
 - A short status action and example script preference are included to demonstrate the UI-to-JavaScript callbacks.
 
-These are actual UI/preferences, not Minecraft gameplay features. There is currently **no connection to the game engine's inventory, camera, renderer, or input system**. Zoom, quick drop, offhand transfer, FPS controls, and auto-totem are not implemented. A script can add a toggle or button, but it only has an effect on the game if its callback has a real supported action; a UI toggle by itself cannot move items or change rendering. The quick buttons are touch buttons, not hardware keyboard keybinds.
+These are actual UI/preferences, not Minecraft gameplay features. There is currently **no connection to the game engine's entity list, inventory, camera, renderer, or input system**. Mob ESP, zoom, quick drop, offhand transfer, FPS controls, and auto-totem are not implemented. Static inspection of the 1.26.33 executable found internal Script API entity-query and camera bindings, but they belong to Minecraft's own script runtime, not the loader's separate JavaScriptCore context; they are not currently callable by these scripts. A no-pack native ESP would require a verified in-process entity feed and camera projection path, then testing against a running iOS game. The loader's existing scripts cannot provide that data on their own. A script can add a toggle or button, but it only has an effect on the game if its callback has a real supported action; a UI toggle by itself cannot mark entities, move items, or change rendering. The quick buttons are touch buttons, not hardware keyboard keybinds.
+
+## Synthetic ESP test and data diagnostic
+
+The optional `scripts/esp_test.js` sample adds **Synthetic ESP test boxes** and **Export chunk data diagnostic**. Enable the feature to draw two fixed, touch-through screen boxes labelled **TEST COW — NOT LIVE** and **TEST PLAYER — NOT LIVE**. They are UI fixtures only; they do not track, locate, or reveal entities in a world. To run the export, open the panel's **Buttons** tab, add **Export chunk data diagnostic**, then tap its floating button.
+
+The export action writes `Documents/ClientLoader/exports/ChunkCaptureDiagnostic.json`. This JSON intentionally reports that live chunk data is unavailable and that blocks/entities were **not captured**. It includes only synthetic labels and bundled vanilla collision dimensions; those examples are not observations from the current world. The native export bridge accepts JSON up to 1 MiB and only allows a simple `.json` filename to keep writes inside the exports folder.
+
+To install the sample through 3105, copy `esp_test.js` from this repository's matching `3105/Patches/Minecraft/Application/com.mojang.minecraftpe/Documents/ClientLoader/scripts/` folder into the patch and apply it. The installed Minecraft app must also contain a loader build that exposes the synthetic overlay and JSON export bridge; rebuilding the dylib is required after native loader changes. A real chunk collector remains unimplemented and would require a verified game-runtime data source.
 
 ## Connection to 3105
 
