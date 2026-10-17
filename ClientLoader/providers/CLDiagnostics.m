@@ -51,6 +51,8 @@ static NSString *CLDiagnosticTimestamp(void) {
     @synchronized (self) { errors = [sRecentErrors copy]; }
     return @{
         @"schemaVersion": @2,
+        @"producer": @"native ClientLoader.CLDiagnostics.runtimeReport",
+        @"exportRoute": @"ClientMenu.exportDiagnostics",
         @"captureTimestamp": CLDiagnosticTimestamp(),
         @"minecraft": @{
             @"bundleIdentifier": info[@"CFBundleIdentifier"] ?: @"unknown",

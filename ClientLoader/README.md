@@ -51,7 +51,9 @@ The code now has a working snapshot contract, validation and a 256-snapshot rete
 
 **Important: the producer side is still not connected to Minecraft.** The target binary contains Script API method-name strings and renderer uniform names, but this inspection has not found a callable entity query, a live camera matrix accessor, or a safe update hook. Therefore the new live toggle currently renders no boxes until a verified native adapter publishes snapshots and camera state. That is a measurable implementation step, not a claim that live entity capture already works. Do not use fabricated addresses or Android offsets as a provider.
 
-The export action writes `Documents/ClientLoader/exports/ChunkCaptureDiagnostic.json`. Its report distinguishes unavailable providers from successful empty queries; chunk/block data is not claimed. The 3105 script copy at `3105/Patches/Minecraft/Application/com.mojang.minecraftpe/Documents/ClientLoader/scripts/esp_test.js` matches the repository script. A new dylib build is required after native changes.
+The app payload's `server_library` shim imports `@minecraft/server-bindings` and re-exports API types including `Entity`, `Dimension`, and `EntityQueryOptions`. This makes a Minecraft-hosted behavior-pack script a plausible separate way to query world entities when a script-enabled pack is installed and enabled. It is not a verified data source for this loader: the bundled files are API shims, vanilla behavior-pack manifests do not declare script modules, and no supported channel has been identified from the game script runtime into this loader's JavaScriptCore context or native overlay. A behavior-pack route would also need a separately verified camera/projection path for screen-space boxes.
+
+The export action writes `Documents/ClientLoader/exports/ChunkCaptureDiagnostic.json`. The native `ClientMenu.exportDiagnostics` route emits a schema-2 report marked with its `producer` and `exportRoute`; the separate `ClientMenu.exportJSON` bridge writes caller-supplied JSON unchanged and logs its schema version. Do not infer the native report producer from a JSON `source` field alone. Each evaluated script is logged by filename and UTF-8 byte count so additional Documents scripts can be distinguished. The report distinguishes unavailable providers from successful empty queries; chunk/block data is not claimed. The 3105 script copy at `3105/Patches/Minecraft/Application/com.mojang.minecraftpe/Documents/ClientLoader/scripts/esp_test.js` matches the repository script. A new dylib build is required after native changes.
 
 ### Vanilla entity type registry
 
@@ -94,6 +96,14 @@ ClientMenu.registerAction("My action", function () {
 ```
 
 Feature values are saved by name on-device and restored when the script registers them again. Actions appear in the Buttons tab and can be added to the on-screen button bar. Only install scripts you trust: they execute inside the game process.
+
+### 3105 / Minecraft Script API diagnostic
+
+The ClientLoader-side 3105 patch includes `scripts/minecraft_api_3105_diagnostic.js`. On loader startup it probes whether `world.getDimension("overworld").getEntities()` is available in ClientLoader's JavaScriptCore context, then calls the native `ClientMenu.reportRuntimeStatus(json, fileName)` bridge. ClientLoader validates the report, writes it atomically to `Documents/ClientLoader/diagnostics/MinecraftAPIDiagnostic.json`, logs every reported error, and shows a notification with the result/report path. The native bridge accepts only a JSON basename matching `[A-Za-z0-9_-]{1,64}.json` and reports up to 1 MiB.
+
+The 3105 patch also installs a separate behavior pack at `Documents/games/com.mojang/behavior_packs/clientloader_api_diagnostic`. Its `scripts/main.js` uses the actual `import { world, system } from "@minecraft/server"` module and reports a successful entity query or its full caught error through Minecraft world chat when a player spawns. After applying 3105, import/enable **ClientLoader Script API Diagnostic** in the target world as a behavior pack; it does not activate automatically. This fallback runs inside Minecraft's own Script API runtime and is independent of ClientLoader's probe.
+
+There is currently no verified file or notification bridge from a Minecraft behavior-pack script to the native ClientLoader dylib. The behavior-pack fallback therefore reports in Minecraft chat; it cannot write the ClientLoader diagnostic file or claim the native bridge is active. A module import or manifest-load failure can occur before script code runs and must be inspected in Minecraft's content log. “3105 script executed” means the patch-delivered ClientLoader script was evaluated, not that the 3105 application itself remains running. Rebuild the iOS dylib on the existing macOS/GitHub Actions workflow after native source changes; JavaScript and 3105 patch changes alone do not need a dylib rebuild.
 
 ## Build without owning a Mac
 

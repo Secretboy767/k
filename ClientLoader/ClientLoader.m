@@ -29,6 +29,9 @@ JSExportAs(isFeatureEnabled,
 JSExportAs(exportJSON,
 - (NSString *)exportJSON:(NSString *)json fileName:(NSString *)fileName
 );
+JSExportAs(reportRuntimeStatus,
+- (NSString *)reportRuntimeStatus:(NSString *)json fileName:(NSString *)fileName
+);
 JSExportAs(setSyntheticESPEnabled,
 - (void)setSyntheticESPEnabled:(BOOL)enabled
 );
@@ -306,6 +309,9 @@ static UIColor *ClientColor(NSString *hex, CGFloat alpha) {
             @"ERROR: rejected invalid diagnostic JSON: %@", jsonError]);
         return nil;
     }
+    id schemaValue = [object isKindOfClass:NSDictionary.class] ? object[@"schemaVersion"] : nil;
+    NSString *schemaVersion = [schemaValue isKindOfClass:NSNumber.class]
+        ? [schemaValue stringValue] : @"unknown";
 
     NSURL *documentsURL = [[[NSFileManager defaultManager]
         URLsForDirectory:NSDocumentDirectory
@@ -335,8 +341,8 @@ static UIColor *ClientColor(NSString *hex, CGFloat alpha) {
         return nil;
     }
     ClientLoaderLog([NSString stringWithFormat:
-        @"Exported diagnostic JSON (%lu bytes) to %@",
-        (unsigned long)data.length, fileURL.path]);
+        @"Exported caller-supplied JSON via ClientMenu.exportJSON (schemaVersion=%@, %lu bytes) to %@",
+        schemaVersion, (unsigned long)data.length, fileURL.path]);
     return fileURL.path;
 }
 
@@ -361,8 +367,135 @@ static UIColor *ClientColor(NSString *hex, CGFloat alpha) {
         return nil;
     }
     ClientLoaderLog([NSString stringWithFormat:
-        @"Exported live ESP diagnostic report to %@", path]);
+        @"Exported native CLDiagnostics runtime report (schemaVersion=2) to %@", path]);
     return path;
+}
+
+- (NSString *)reportRuntimeStatus:(NSString *)json fileName:(NSString *)fileName {
+    if (![json isKindOfClass:NSString.class] || json.length == 0 ||
+        ![fileName isKindOfClass:NSString.class] || fileName.length == 0) {
+        ClientLoaderLog(@"ERROR: rejected runtime status report with missing input");
+        [self notify:@"Could not save the 3105 API status report. Check ClientLoader.log."];
+        return nil;
+    }
+
+    NSRegularExpression *fileNamePattern = [NSRegularExpression
+        regularExpressionWithPattern:@"^[A-Za-z0-9_-]{1,64}\\.json$"
+                             options:0
+                               error:nil];
+    NSTextCheckingResult *match = [fileNamePattern firstMatchInString:fileName
+                                                              options:0
+                                                                range:NSMakeRange(0, fileName.length)];
+    if (!match || match.range.length != fileName.length) {
+        ClientLoaderLog(@"ERROR: rejected runtime status report with an invalid file name");
+        [self notify:@"Could not save the 3105 API status report: invalid file name."];
+        return nil;
+    }
+
+    NSData *data = [json dataUsingEncoding:NSUTF8StringEncoding];
+    if (data.length == 0 || data.length > 1024 * 1024) {
+        ClientLoaderLog(@"ERROR: rejected runtime status report with an invalid size");
+        [self notify:@"Could not save the 3105 API status report: invalid report size."];
+        return nil;
+    }
+
+    NSError *parseError = nil;
+    id parsed = [NSJSONSerialization JSONObjectWithData:data options:0 error:&parseError];
+    if (![parsed isKindOfClass:NSDictionary.class] || parseError) {
+        ClientLoaderLog([NSString stringWithFormat:
+            @"ERROR: rejected invalid runtime status JSON: %@", parseError]);
+        [self notify:@"Could not read the 3105 API status report. Check ClientLoader.log."];
+        return nil;
+    }
+    NSDictionary *report = parsed;
+    NSDictionary *apiStatus = [report[@"minecraftScriptAPI"] isKindOfClass:NSDictionary.class]
+        ? report[@"minecraftScriptAPI"] : nil;
+    NSArray *reportedErrors = [report[@"errors"] isKindOfClass:NSArray.class]
+        ? report[@"errors"] : nil;
+    NSString *status = [apiStatus[@"status"] isKindOfClass:NSString.class]
+        ? apiStatus[@"status"] : nil;
+    BOOL validStatus = status &&
+        [@[@"available", @"unavailable", @"error"] containsObject:status];
+    BOOL validErrors = reportedErrors != nil;
+    for (id reportedError in reportedErrors) {
+        if (![reportedError isKindOfClass:NSString.class]) {
+            validErrors = NO;
+            break;
+        }
+    }
+    id schemaVersion = report[@"schemaVersion"];
+    NSDictionary *loaderStatus = [report[@"clientLoader"] isKindOfClass:NSDictionary.class]
+        ? report[@"clientLoader"] : nil;
+    NSDictionary *installerStatus = [report[@"3105"] isKindOfClass:NSDictionary.class]
+        ? report[@"3105"] : nil;
+    if (![schemaVersion isKindOfClass:NSNumber.class] ||
+        [schemaVersion integerValue] != 1 ||
+        ![loaderStatus[@"status"] isEqual:@"running"] ||
+        ![installerStatus[@"status"] isEqual:@"script_executed"] ||
+        !apiStatus || !validStatus || !validErrors) {
+        ClientLoaderLog(@"ERROR: rejected runtime status report with an invalid schema");
+        [self notify:@"Could not save the 3105 API status report: invalid report schema."];
+        return nil;
+    }
+
+    NSURL *documentsURL = [[[NSFileManager defaultManager]
+        URLsForDirectory:NSDocumentDirectory
+               inDomains:NSUserDomainMask] firstObject];
+    if (!documentsURL) {
+        ClientLoaderLog(@"ERROR: could not locate Documents for runtime status report");
+        [self notify:@"Could not save the 3105 API status report. Check ClientLoader.log."];
+        return nil;
+    }
+    NSURL *directoryURL = [[documentsURL URLByAppendingPathComponent:@"ClientLoader"
+                                                         isDirectory:YES]
+        URLByAppendingPathComponent:@"diagnostics" isDirectory:YES];
+    NSError *directoryError = nil;
+    if (![[NSFileManager defaultManager] createDirectoryAtURL:directoryURL
+                                  withIntermediateDirectories:YES
+                                                   attributes:nil
+                                                        error:&directoryError]) {
+        ClientLoaderLog([NSString stringWithFormat:
+            @"ERROR: could not create runtime status directory: %@", directoryError]);
+        [self notify:@"Could not save the 3105 API status report. Check ClientLoader.log."];
+        return nil;
+    }
+
+    NSMutableDictionary *savedReport = [report mutableCopy];
+    savedReport[@"nativeBridge"] = @{
+        @"status": @"received",
+        @"receivedAt": [[NSISO8601DateFormatter new] stringFromDate:[NSDate date]]
+    };
+    NSError *serializationError = nil;
+    NSData *savedData = [NSJSONSerialization dataWithJSONObject:savedReport
+                                                        options:NSJSONWritingPrettyPrinted
+                                                          error:&serializationError];
+    NSURL *fileURL = [directoryURL URLByAppendingPathComponent:fileName];
+    NSError *writeError = nil;
+    if (!savedData || ![savedData writeToURL:fileURL
+                                     options:NSDataWritingAtomic
+                                       error:&writeError]) {
+        ClientLoaderLog([NSString stringWithFormat:
+            @"ERROR: could not write runtime status report: %@",
+            serializationError ?: writeError]);
+        [self notify:@"Could not write the 3105 API status report. Check ClientLoader.log."];
+        return nil;
+    }
+
+    BOOL apiAvailable = [status isEqualToString:@"available"];
+    for (NSString *reportedError in reportedErrors) {
+        ClientLoaderLog([NSString stringWithFormat:
+            @"ERROR: 3105 API diagnostic: %@", reportedError]);
+    }
+    ClientLoaderLog([NSString stringWithFormat:
+        @"Saved 3105 runtime status report (%@, %lu error(s)) to %@",
+        status, (unsigned long)reportedErrors.count, fileURL.path]);
+    NSString *message = apiAvailable
+        ? @"3105-installed diagnostic ran and the Minecraft Script API entity query succeeded."
+        : [NSString stringWithFormat:
+            @"3105-installed diagnostic ran, but the Minecraft Script API is %@. Full errors: %@",
+            status, fileURL.path];
+    [self notify:message];
+    return fileURL.path;
 }
 
 @end
@@ -1124,6 +1257,10 @@ static void ClientLoaderLoadScripts(void) {
                 scriptURL.lastPathComponent, readError]);
             continue;
         }
+        ClientLoaderLog([NSString stringWithFormat:
+            @"Evaluating script %@ (%lu UTF-8 bytes)",
+            scriptURL.lastPathComponent,
+            (unsigned long)[source lengthOfBytesUsingEncoding:NSUTF8StringEncoding]]);
         [sContext evaluateScript:source withSourceURL:scriptURL];
     }
     ClientLoaderLog([NSString stringWithFormat:

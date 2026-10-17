@@ -1,0 +1,25 @@
+{
+  "format_version": 2,
+  "header": {
+    "name": "ClientLoader Script API Diagnostic",
+    "description": "Checks the Minecraft-hosted Script API and reports its result in world chat.",
+    "uuid": "39fc4286-20ed-46ca-a0cb-9ddc876f203b",
+    "version": [1, 0, 0],
+    "min_engine_version": [1, 20, 0]
+  },
+  "modules": [
+    {
+      "type": "script",
+      "language": "javascript",
+      "uuid": "23975048-2799-4a64-9360-a735e5569ef4",
+      "version": [1, 0, 0],
+      "entry": "scripts/main.js"
+    }
+  ],
+  "dependencies": [
+    {
+      "module_name": "@minecraft/server",
+      "version": "2.0.0"
+    }
+  ]
+}
