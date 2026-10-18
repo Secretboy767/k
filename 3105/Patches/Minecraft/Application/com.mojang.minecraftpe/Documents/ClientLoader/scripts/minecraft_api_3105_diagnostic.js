@@ -2,12 +2,13 @@
     "use strict";
 
     var errors = [];
+    var limitations = [];
     var probes = {
         clientMenuBridge: typeof ClientMenu !== "undefined",
         minecraftWorldGlobal: typeof world !== "undefined",
         minecraftSystemGlobal: typeof system !== "undefined"
     };
-    var apiStatus = "unavailable";
+    var apiStatus = "not_exposed_in_clientloader_context";
     var entityCount = null;
 
     if (!probes.clientMenuBridge) {
@@ -15,10 +16,10 @@
     }
 
     if (!probes.minecraftWorldGlobal) {
-        errors.push(
-            "Minecraft Script API global 'world' is not exposed in the ClientLoader JavaScriptCore context. " +
-            "The Minecraft Script API must be imported by Minecraft-hosted behavior-pack scripts; " +
-            "3105 loader scripts run in a separate context."
+        limitations.push(
+            "This probe runs in ClientLoader's JavaScriptCore context, not a Minecraft behavior-pack module. " +
+            "It cannot resolve import { world, system } from '@minecraft/server'; " +
+            "the behavior-pack fallback result is not reported to this file."
         );
     } else {
         try {
@@ -56,16 +57,21 @@
         },
         "3105": {
             status: probes.clientMenuBridge ? "script_executed" : "unavailable",
-            installedScriptExecuted: true
+            installedScriptExecuted: true,
+            installationMethod: "ClientLoader evaluated this script from Documents/ClientLoader/scripts",
+            installerApplicationStatus: "not_independently_verified"
         },
         minecraftScriptAPI: {
             status: apiStatus,
+            scope: "ClientLoader JavaScriptCore context only",
             probes: probes,
+            behaviorPackFallback: "not_reported_by_this_runtime",
             entityQuery: {
                 status: entityCount === null ? "not_run" : "succeeded",
                 entityCount: entityCount
             }
         },
+        limitations: limitations,
         errors: errors
     };
 
@@ -109,9 +115,12 @@
 
     if (reportPath && bridgeMode === "legacy_export_json") {
         var legacyMessage = apiStatus === "available"
-            ? "3105-installed diagnostic ran and the Minecraft Script API entity query succeeded."
-            : "3105-installed diagnostic ran, but the Minecraft Script API is " +
-              apiStatus + ". Full errors: " + reportPath;
+            ? "ClientLoader's diagnostic entity query succeeded."
+            : (apiStatus === "not_exposed_in_clientloader_context"
+                ? "ClientLoader's diagnostic script ran. This check does not test Minecraft's behavior-pack API. Report: " +
+                  reportPath
+                : "ClientLoader's entity query returned " + apiStatus +
+                  ". Full report: " + reportPath);
         if (typeof ClientMenu.notify === "function") {
             ClientMenu.notify(legacyMessage);
         }

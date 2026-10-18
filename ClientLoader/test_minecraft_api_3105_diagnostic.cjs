@@ -38,8 +38,15 @@ function runDiagnostic(globals, bridge = "native") {
     assert.equal(fileName, "MinecraftAPIDiagnostic.json");
     assert.equal(report.clientLoader.status, "running");
     assert.equal(report["3105"].status, "script_executed");
-    assert.equal(report.minecraftScriptAPI.status, "unavailable");
-    assert.match(report.errors.join("\n"), /separate context/);
+    assert.equal(
+        report.minecraftScriptAPI.status,
+        "not_exposed_in_clientloader_context"
+    );
+    assert.equal(report.errors.length, 0);
+    assert.match(report.limitations.join("\n"), /not a Minecraft behavior-pack module/);
+    assert.equal(report["3105"].status, "script_executed");
+    assert.equal(report["3105"].installerApplicationStatus, "not_independently_verified");
+    assert.equal(report.minecraftScriptAPI.behaviorPackFallback, "not_reported_by_this_runtime");
 }
 
 {
@@ -63,9 +70,12 @@ function runDiagnostic(globals, bridge = "native") {
     const result = runDiagnostic({}, "legacy");
     const { report, fileName } = result.reports[0];
     assert.equal(fileName, "MinecraftAPIDiagnostic.json");
-    assert.equal(report.minecraftScriptAPI.status, "unavailable");
+    assert.equal(
+        report.minecraftScriptAPI.status,
+        "not_exposed_in_clientloader_context"
+    );
     assert.equal(report.nativeBridge.fallback, "ClientMenu.exportJSON");
-    assert.match(result.notifications[0], /Minecraft Script API is unavailable/);
+    assert.match(result.notifications[0], /does not test Minecraft's behavior-pack API/);
 }
 
 {
@@ -191,6 +201,8 @@ function runDiagnostic(globals, bridge = "native") {
     assert.match(nativeSource, /diagnostics/);
     assert.match(nativeSource, /NSDataWritingAtomic/);
     assert.match(nativeSource, /3105 API diagnostic:/);
+    assert.match(nativeSource, /This check does not test Minecraft's behavior-pack API/);
+    assert.match(nativeSource, /not_exposed_in_clientloader_context/);
 }
 
 console.log("Minecraft API / 3105 diagnostic tests passed");

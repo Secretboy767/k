@@ -415,7 +415,8 @@ static UIColor *ClientColor(NSString *hex, CGFloat alpha) {
     NSString *status = [apiStatus[@"status"] isKindOfClass:NSString.class]
         ? apiStatus[@"status"] : nil;
     BOOL validStatus = status &&
-        [@[@"available", @"unavailable", @"error"] containsObject:status];
+        [@[@"available", @"unavailable", @"error",
+           @"not_exposed_in_clientloader_context"] containsObject:status];
     BOOL validErrors = reportedErrors != nil;
     for (id reportedError in reportedErrors) {
         if (![reportedError isKindOfClass:NSString.class]) {
@@ -490,10 +491,14 @@ static UIColor *ClientColor(NSString *hex, CGFloat alpha) {
         @"Saved 3105 runtime status report (%@, %lu error(s)) to %@",
         status, (unsigned long)reportedErrors.count, fileURL.path]);
     NSString *message = apiAvailable
-        ? @"3105-installed diagnostic ran and the Minecraft Script API entity query succeeded."
-        : [NSString stringWithFormat:
-            @"3105-installed diagnostic ran, but the Minecraft Script API is %@. Full errors: %@",
-            status, fileURL.path];
+        ? @"ClientLoader diagnostic ran and its entity query succeeded."
+        : ([status isEqualToString:@"not_exposed_in_clientloader_context"]
+            ? [NSString stringWithFormat:
+                @"ClientLoader's diagnostic script ran. This check does not test Minecraft's behavior-pack API. Report: %@",
+                fileURL.path]
+            : [NSString stringWithFormat:
+                @"ClientLoader's entity query returned %@. Full report: %@",
+                status, fileURL.path]);
     [self notify:message];
     return fileURL.path;
 }
