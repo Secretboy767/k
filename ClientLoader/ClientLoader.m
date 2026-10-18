@@ -1279,7 +1279,7 @@ static void ClientLoaderStart(void) {
         if ([CLEntityTypeRegistry loadRegistryFromDocumentsWithError:&error]) {
             NSDictionary *report = [CLEntityTypeRegistry diagnostics];
             ClientLoaderLog([NSString stringWithFormat:
-                @"Loaded %lu entity type definition(s) from registry (%@).",
+                @"Loaded %lu vanilla entity metadata definition(s) for classification only; this is not a live entity query (%@).",
                 (unsigned long)[report[@"loadedIdentifierCount"] unsignedIntegerValue],
                 report[@"sourceDirectory"]]);
         } else {

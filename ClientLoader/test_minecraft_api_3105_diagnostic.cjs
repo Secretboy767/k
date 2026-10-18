@@ -117,6 +117,7 @@ function runDiagnostic(globals, bridge = "native") {
     assert.match(nativeSource, /3105 API diagnostic:/);
     assert.match(nativeSource, /Minecraft's @minecraft\/server API was not tested by this check/);
     assert.match(nativeSource, /not_tested/);
+    assert.match(nativeSource, /not a live entity query/);
 }
 
 console.log("Minecraft API / 3105 diagnostic tests passed");
