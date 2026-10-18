@@ -3,73 +3,36 @@
 
     var errors = [];
     var limitations = [];
-    var probes = {
-        clientMenuBridge: typeof ClientMenu !== "undefined",
-        minecraftWorldGlobal: typeof world !== "undefined",
-        minecraftSystemGlobal: typeof system !== "undefined"
-    };
-    var apiStatus = "not_exposed_in_clientloader_context";
-    var entityCount = null;
+    var hasClientMenu = typeof ClientMenu !== "undefined";
 
-    if (!probes.clientMenuBridge) {
+    if (!hasClientMenu) {
         errors.push("ClientMenu bridge is unavailable; ClientLoader did not inject its script API.");
     }
-
-    if (!probes.minecraftWorldGlobal) {
-        limitations.push(
-            "This probe runs in ClientLoader's JavaScriptCore context, not a Minecraft behavior-pack module. " +
-            "It cannot resolve import { world, system } from '@minecraft/server'; " +
-            "the behavior-pack fallback result is not reported to this file."
-        );
-    } else {
-        try {
-            if (typeof world.getDimension !== "function") {
-                throw new Error("world.getDimension is not a function");
-            }
-            var dimension = world.getDimension("overworld");
-            if (!dimension || typeof dimension.getEntities !== "function") {
-                throw new Error("overworld dimension does not expose getEntities()");
-            }
-            var entities = dimension.getEntities();
-            if (!entities || typeof entities.length !== "number" ||
-                !isFinite(entities.length) || entities.length < 0 ||
-                Math.floor(entities.length) !== entities.length) {
-                throw new Error("dimension.getEntities() returned a non-array result");
-            }
-            entityCount = entities.length;
-            apiStatus = "available";
-        } catch (error) {
-            apiStatus = "error";
-            var errorText = error && error.stack
-                ? String(error.stack)
-                : String(error && error.message ? error.message : error);
-            errors.push("Minecraft Script API probe failed: " + errorText);
-        }
-    }
+    limitations.push(
+        "Minecraft's @minecraft/server ES module is provided by the game's scripting host. " +
+        "ClientLoader's injected JavaScriptCore context has no Bedrock module resolver; " +
+        "this diagnostic does not import or test the Minecraft API."
+    );
 
     var report = {
         schemaVersion: 1,
-        source: "ClientLoader 3105 Minecraft API diagnostic",
+        source: "ClientLoader 3105 script-runtime diagnostic",
         capturedAt: new Date().toISOString(),
         clientLoader: {
-            status: probes.clientMenuBridge ? "running" : "unavailable",
+            status: hasClientMenu ? "running" : "unavailable",
             script: "minecraft_api_3105_diagnostic.js"
         },
         "3105": {
-            status: probes.clientMenuBridge ? "script_executed" : "unavailable",
+            status: hasClientMenu ? "script_executed" : "unavailable",
             installedScriptExecuted: true,
             installationMethod: "ClientLoader evaluated this script from Documents/ClientLoader/scripts",
             installerApplicationStatus: "not_independently_verified"
         },
         minecraftScriptAPI: {
-            status: apiStatus,
+            status: "not_tested",
             scope: "ClientLoader JavaScriptCore context only",
-            probes: probes,
-            behaviorPackFallback: "not_reported_by_this_runtime",
-            entityQuery: {
-                status: entityCount === null ? "not_run" : "succeeded",
-                entityCount: entityCount
-            }
+            importResolution: "not_supported_in_this_context",
+            entityQuery: "not_run"
         },
         limitations: limitations,
         errors: errors
@@ -77,7 +40,7 @@
 
     var reportPath = null;
     var bridgeMode = "unavailable";
-    if (probes.clientMenuBridge &&
+    if (hasClientMenu &&
         typeof ClientMenu.reportRuntimeStatus === "function") {
         try {
             bridgeMode = "native_report_api";
@@ -94,7 +57,7 @@
         }
     }
 
-    if (!reportPath && probes.clientMenuBridge &&
+    if (!reportPath && hasClientMenu &&
         typeof ClientMenu.exportJSON === "function") {
         try {
             bridgeMode = "legacy_export_json";
@@ -114,15 +77,11 @@
     }
 
     if (reportPath && bridgeMode === "legacy_export_json") {
-        var legacyMessage = apiStatus === "available"
-            ? "ClientLoader's diagnostic entity query succeeded."
-            : (apiStatus === "not_exposed_in_clientloader_context"
-                ? "ClientLoader's diagnostic script ran. This check does not test Minecraft's behavior-pack API. Report: " +
-                  reportPath
-                : "ClientLoader's entity query returned " + apiStatus +
-                  ". Full report: " + reportPath);
         if (typeof ClientMenu.notify === "function") {
-            ClientMenu.notify(legacyMessage);
+            ClientMenu.notify(
+                "ClientLoader's script ran. Minecraft's @minecraft/server API was not tested by this check. Report: " +
+                reportPath
+            );
         }
     } else if (!reportPath) {
         console.error(

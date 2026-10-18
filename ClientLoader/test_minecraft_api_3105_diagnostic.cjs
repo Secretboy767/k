@@ -38,15 +38,12 @@ function runDiagnostic(globals, bridge = "native") {
     assert.equal(fileName, "MinecraftAPIDiagnostic.json");
     assert.equal(report.clientLoader.status, "running");
     assert.equal(report["3105"].status, "script_executed");
-    assert.equal(
-        report.minecraftScriptAPI.status,
-        "not_exposed_in_clientloader_context"
-    );
+    assert.equal(report.minecraftScriptAPI.status, "not_tested");
+    assert.equal(report.minecraftScriptAPI.importResolution, "not_supported_in_this_context");
+    assert.equal(report.minecraftScriptAPI.entityQuery, "not_run");
     assert.equal(report.errors.length, 0);
-    assert.match(report.limitations.join("\n"), /not a Minecraft behavior-pack module/);
-    assert.equal(report["3105"].status, "script_executed");
+    assert.match(report.limitations.join("\n"), /does not import or test the Minecraft API/);
     assert.equal(report["3105"].installerApplicationStatus, "not_independently_verified");
-    assert.equal(report.minecraftScriptAPI.behaviorPackFallback, "not_reported_by_this_runtime");
 }
 
 {
@@ -60,9 +57,8 @@ function runDiagnostic(globals, bridge = "native") {
         system: {}
     });
     const report = result.reports[0].report;
-    assert.equal(report.minecraftScriptAPI.status, "available");
-    assert.equal(report.minecraftScriptAPI.entityQuery.status, "succeeded");
-    assert.equal(report.minecraftScriptAPI.entityQuery.entityCount, 2);
+    assert.equal(report.minecraftScriptAPI.status, "not_tested");
+    assert.equal(report.minecraftScriptAPI.entityQuery, "not_run");
     assert.deepEqual(report.errors, []);
 }
 
@@ -70,29 +66,9 @@ function runDiagnostic(globals, bridge = "native") {
     const result = runDiagnostic({}, "legacy");
     const { report, fileName } = result.reports[0];
     assert.equal(fileName, "MinecraftAPIDiagnostic.json");
-    assert.equal(
-        report.minecraftScriptAPI.status,
-        "not_exposed_in_clientloader_context"
-    );
+    assert.equal(report.minecraftScriptAPI.status, "not_tested");
     assert.equal(report.nativeBridge.fallback, "ClientMenu.exportJSON");
-    assert.match(result.notifications[0], /does not test Minecraft's behavior-pack API/);
-}
-
-{
-    const result = runDiagnostic({
-        world: { getDimension: () => ({ getEntities: () => { throw new Error("query denied"); } }) }
-    });
-    const report = result.reports[0].report;
-    assert.equal(report.minecraftScriptAPI.status, "error");
-    assert.match(report.errors[0], /query denied/);
-}
-
-{
-    const result = runDiagnostic({
-        world: { getDimension: () => ({ getEntities: () => ({}) }) }
-    });
-    assert.equal(result.reports[0].report.minecraftScriptAPI.status, "error");
-    assert.match(result.reports[0].report.errors[0], /non-array result/);
+    assert.match(result.notifications[0], /API was not tested by this check/);
 }
 
 {
@@ -110,10 +86,7 @@ function runDiagnostic(globals, bridge = "native") {
         "minecraft_api_3105_diagnostic.js"
     );
     assert.equal(fs.readFileSync(sourceCopy, "utf8"), source);
-}
-
-{
-    const packRoot = path.join(
+    const patchDocuments = path.resolve(
         __dirname,
         "..",
         "3105",
@@ -121,76 +94,17 @@ function runDiagnostic(globals, bridge = "native") {
         "Minecraft",
         "Application",
         "com.mojang.minecraftpe",
-        "Documents",
-        "games",
-        "com.mojang",
-        "behavior_packs",
-        "clientloader_api_diagnostic"
+        "Documents"
     );
-    const manifest = JSON.parse(
-        fs.readFileSync(path.join(packRoot, "manifest.json"), "utf8")
+    assert.equal(
+        fs.existsSync(path.join(patchDocuments, "games", "com.mojang", "behavior_packs")),
+        false,
+        "3105 patch must not add or require a behavior pack."
     );
-    assert.equal(manifest.modules[0].type, "script");
-    assert.equal(manifest.modules[0].entry, "scripts/main.js");
-    assert.deepEqual(manifest.dependencies[0], {
-        module_name: "@minecraft/server",
-        version: "2.0.0"
-    });
-
-    const packSource = fs.readFileSync(
-        path.join(packRoot, "scripts", "main.js"),
-        "utf8"
-    );
-    assert.match(packSource, /^import \{ world, system \} from "@minecraft\/server";/);
-    const executableSource = packSource.replace(
-        /^import \{ world, system \} from "@minecraft\/server";\s*/,
-        ""
-    );
-    assert.notEqual(executableSource, packSource);
-    const notifications = [];
-    let spawnCallback;
-    const player = { sendMessage: (message) => notifications.push(message) };
-    const testWorld = {
-        getDimension: (id) => {
-            assert.equal(id, "overworld");
-            return { getEntities: () => [{}, {}] };
-        },
-        afterEvents: {
-            playerSpawn: {
-                subscribe: (callback) => { spawnCallback = callback; }
-            }
-        }
-    };
-    vm.runInNewContext(executableSource, {
-        world: testWorld,
-        system: { run: (callback) => callback() }
-    });
-    spawnCallback({ player });
-    assert.match(notifications[0], /query succeeded; overworld entities: 2/);
-    assert.match(notifications[1], /ClientLoader bridge status is separate/);
-
-    notifications.length = 0;
-    testWorld.getDimension = () => ({
-        getEntities: () => { throw new Error("script API denied"); }
-    });
-    spawnCallback({ player });
-    assert.match(notifications.join("\n"), /entity query failed/);
-    assert.match(notifications.join("\n"), /script API denied/);
-
-    notifications.length = 0;
-    testWorld.getDimension = () => ({
-        getEntities: () => {
-            throw new Error("F".repeat(500));
-        }
-    });
-    spawnCallback({ player });
-    assert.ok(notifications.length >= 4);
-    assert.ok(notifications.every((message) => message.length <= 255));
-    const errorChunks = notifications.slice(1, -1)
-        .map((message) => message.split("§r ")[1] || "");
-    assert.ok(
-        errorChunks.join("").includes("F".repeat(500)),
-        "The complete caught error should be split across chat messages."
+    assert.equal(
+        fs.existsSync(path.join(patchDocuments, "games", "com.mojang", "resource_packs")),
+        false,
+        "3105 patch must not add or require a resource pack."
     );
 }
 
@@ -201,8 +115,8 @@ function runDiagnostic(globals, bridge = "native") {
     assert.match(nativeSource, /diagnostics/);
     assert.match(nativeSource, /NSDataWritingAtomic/);
     assert.match(nativeSource, /3105 API diagnostic:/);
-    assert.match(nativeSource, /This check does not test Minecraft's behavior-pack API/);
-    assert.match(nativeSource, /not_exposed_in_clientloader_context/);
+    assert.match(nativeSource, /Minecraft's @minecraft\/server API was not tested by this check/);
+    assert.match(nativeSource, /not_tested/);
 }
 
 console.log("Minecraft API / 3105 diagnostic tests passed");
